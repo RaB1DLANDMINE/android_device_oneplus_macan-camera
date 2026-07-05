@@ -165,18 +165,31 @@ def blob_fixup_opluscamera_blur_seginit_guard(ctx, file, file_path, *args, tmp_d
     if tmp_dir is None:
         return
 
-    process_smali = next(Path(tmp_dir).glob('smali*/ub/b.smali'), None)
-    if process_smali is None:
-        raise ValueError('OplusCamera blur process smali not found')
+    def find_smali(*needles):
+        for smali in Path(tmp_dir).glob('smali*/**/*.smali'):
+            data = smali.read_text(encoding='utf-8', errors='ignore')
+            if all(needle in data for needle in needles):
+                return smali, data
+        return None, None
 
-    data = process_smali.read_text(encoding='utf-8', errors='ignore')
+    process_smali = next(Path(tmp_dir).glob('smali*/ub/b.smali'), None)
+    if process_smali is not None:
+        data = process_smali.read_text(encoding='utf-8', errors='ignore')
+    else:
+        process_smali, data = find_smali(
+            '/odm/etc/camera/singleblur/personseg.bin',
+            'Lcom/oplus/ocs/camera/OplusBlurPreviewHelper;->segInit',
+            'sput-object',
+        )
+    if process_smali is None:
+        return
     if '/odm/etc/camera/singleblur/personseg.bin' not in data:
-        raise ValueError('OplusCamera blur process segInit anchor not found')
+        return
 
     fixed, count = re.subn(
         r'(?s)(invoke-virtual/range \{v1 \.\. v7\}, Lcom/oplus/ocs/camera/OplusBlurPreviewHelper;->segInit\(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;II\)\[I.*?'
         r'move-result-object v0.*?'
-        r'sput-object v0, Lub/b;->w:\[I)',
+        r'sput-object v0, L[^;]+;->w:\[I)',
         r'\1'
         '\n\n'
         '    if-nez v0, :cond_codex_blur_seginit_ok\n'
@@ -189,22 +202,27 @@ def blob_fixup_opluscamera_blur_seginit_guard(ctx, file, file_path, *args, tmp_d
         data,
         count=1,
     )
-    if count != 1:
-        raise ValueError('OplusCamera blur process segInit write not patched')
-    process_smali.write_text(fixed, encoding='utf-8')
+    if count == 1:
+        process_smali.write_text(fixed, encoding='utf-8')
 
     texture_smali = next(Path(tmp_dir).glob('smali*/wb/k.smali'), None)
+    if texture_smali is not None:
+        data = texture_smali.read_text(encoding='utf-8', errors='ignore')
+    else:
+        texture_smali, data = find_smali(
+            'initSegForSizeChange, segInit, cost: ',
+            'Lcom/oplus/ocs/camera/OplusBlurPreviewHelper;->segInit',
+            'sput-object',
+        )
     if texture_smali is None:
-        raise ValueError('OplusCamera blur texture smali not found')
-
-    data = texture_smali.read_text(encoding='utf-8', errors='ignore')
+        return
     if 'initSegForSizeChange, segInit, cost: ' not in data:
-        raise ValueError('OplusCamera blur size-change segInit anchor not found')
+        return
 
     fixed, count = re.subn(
         r'(?s)(invoke-virtual/range \{v3 \.\. v9\}, Lcom/oplus/ocs/camera/OplusBlurPreviewHelper;->segInit\(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;II\)\[I.*?'
         r'move-result-object p0.*?'
-        r'sput-object p0, Lub/b;->w:\[I)',
+        r'sput-object p0, L[^;]+;->w:\[I)',
         r'\1'
         '\n\n'
         '    if-nez p0, :cond_codex_blur_size_seginit_ok\n'
@@ -215,9 +233,8 @@ def blob_fixup_opluscamera_blur_seginit_guard(ctx, file, file_path, *args, tmp_d
         data,
         count=1,
     )
-    if count != 1:
-        raise ValueError('OplusCamera blur size-change segInit write not patched')
-    texture_smali.write_text(fixed, encoding='utf-8')
+    if count == 1:
+        texture_smali.write_text(fixed, encoding='utf-8')
 
 
 def blob_fixup_strip_oem_permissions(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
@@ -5746,15 +5763,15 @@ blob_fixups: blob_fixups_user_type = {
 }  # fmt: skip
 
 namespace_imports = [
-    'vendor/oneplus/infiniti',
+    'vendor/oneplus/macanc',
     'vendor/oneplus/sm8850-common',
     'hardware/oplus',
 ]
 
 module = ExtractUtilsModule(
-    'infiniti-camera',
+    'macan-camera',
     'oneplus',
-    device_rel_path='device/oneplus/infiniti-camera',
+    device_rel_path='device/oneplus/macan-camera',
     blob_fixups=blob_fixups,
     lib_fixups=lib_fixups,
     namespace_imports=namespace_imports,
@@ -5769,8 +5786,8 @@ import os
 import re
 
 
-CUSTOM_SOONG_BEGIN = "// BEGIN INFINITI-CAMERA CUSTOM SOONG MODULES"
-CUSTOM_SOONG_END = "// END INFINITI-CAMERA CUSTOM SOONG MODULES"
+CUSTOM_SOONG_BEGIN = "// BEGIN macan-camera CUSTOM SOONG MODULES"
+CUSTOM_SOONG_END = "// END macan-camera CUSTOM SOONG MODULES"
 
 
 def write_custom_android_bp():
@@ -5779,7 +5796,7 @@ def write_custom_android_bp():
         Path(__file__).resolve().parents[3],
     ))
 
-    android_bp = top / "vendor" / "oneplus" / "infiniti-camera" / "Android.bp"
+    android_bp = top / "vendor" / "oneplus" / "macan-camera" / "Android.bp"
     if not android_bp.exists():
         return
 

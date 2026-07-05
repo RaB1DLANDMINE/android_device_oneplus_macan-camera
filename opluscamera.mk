@@ -1,12 +1,11 @@
 # OPlus Camera source tree
-OPLUS_CAMERA_PATH := device/oneplus/infiniti-camera
+OPLUS_CAMERA_PATH := device/oneplus/macan-camera
 
 # Blob dependencies
 PRODUCT_PACKAGES += \
     aon.frameworkres.overlay.product \
     android.hardware.graphics.common-V3-ndk.vendor \
-    oplus-services \
-    Photos
+    oplus-services
 
 PRODUCT_SYSTEM_SERVER_JARS += \
     oplus-services
@@ -119,7 +118,7 @@ $(call soong_config_set,camera,package_name,com.oplus.packageName)
 $(call soong_config_set_bool,camera,override_format_from_reserved,true)
 
 # SEpolicy
-include device/oneplus/infiniti-camera/sepolicy/SEPolicy.mk
+include device/oneplus/macan-camera/sepolicy/SEPolicy.mk
 
 # Inherit from camera-vendor.mk
-$(call inherit-product-if-exists, vendor/oneplus/infiniti-camera/infiniti-camera-vendor.mk)
+$(call inherit-product-if-exists, vendor/oneplus/macan-camera/macan-camera-vendor.mk)
