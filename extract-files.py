@@ -5871,6 +5871,7 @@ blob_fixups: blob_fixups_user_type = {
         .call(blob_fixup_opluscamera_font)
         .call(blob_fixup_opluscamera_blur_seginit_guard)
         .call(blob_fixup_strip_oem_permissions)
+        .call(blob_fixup_oplus_camera_blur_npe_guard)
         .apktool_pack()
         .stripzip(),
     'system_ext/app/SystemUIPlugin/SystemUIPlugin.apk': blob_fixup()
