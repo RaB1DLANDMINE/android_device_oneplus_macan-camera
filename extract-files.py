@@ -342,6 +342,78 @@ def blob_fixup_oplus_camera_blur_npe_guard(ctx, file, file_path, *args, tmp_dir=
             out.append(data[last:])
             smali.write_text(''.join(out), encoding='utf-8')
 
+def blob_fixup_opluscamera_third_party_gallery(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # Drop the OEM gallery dependency for thumbnail preview. This mirrors the
+    # upstream giulia camera-port approach: bypass the package availability
+    # gate and launch a plain ACTION_VIEW intent with read permission.
+    if tmp_dir is None:
+        return
+
+    smali = next(Path(tmp_dir).glob('smali*/com/oplus/camera/helper/GalleryHelper.smali'), None)
+    if smali is None:
+        raise ValueError('OplusCamera GalleryHelper smali not found')
+
+    data = smali.read_text(encoding='utf-8', errors='ignore')
+
+    availability_pattern = (
+        r'(invoke-static \{v3, v2\}, Lcom/oplus/camera/util/Util;->u0\(Landroid/app/Activity;Ljava/lang/String;\)Z\n'
+        r'\n'
+        r'(?:    \.line \d+\n)+'
+        r'    move-result v3\n'
+        r'\n'
+        r'(?:    \.line \d+\n)+'
+        r'    const/4 v11, 0x0\n'
+        r'\n'
+        r'(?:    \.line \d+\n)+)'
+        r'    if-nez v3, :cond_0\n'
+    )
+    data, availability_count = re.subn(
+        availability_pattern,
+        r'\1    goto :cond_0\n',
+        data,
+        count=1,
+    )
+    if availability_count != 1:
+        raise ValueError('OplusCamera gallery availability gate patch point not found')
+
+    q_body = (
+        '    .locals 2\n'
+        '\n'
+        '    new-instance v0, Landroid/content/Intent;\n'
+        '\n'
+        '    const-string v1, "android.intent.action.VIEW"\n'
+        '\n'
+        '    invoke-direct {v0, v1}, Landroid/content/Intent;-><init>(Ljava/lang/String;)V\n'
+        '\n'
+        '    if-eqz p2, :cond_codex_gallery_image\n'
+        '\n'
+        '    const-string v1, "video/*"\n'
+        '\n'
+        '    goto :goto_codex_gallery_type\n'
+        '\n'
+        '    :cond_codex_gallery_image\n'
+        '    const-string v1, "image/*"\n'
+        '\n'
+        '    :goto_codex_gallery_type\n'
+        '    invoke-virtual {v0, p3, v1}, Landroid/content/Intent;->setDataAndType(Landroid/net/Uri;Ljava/lang/String;)Landroid/content/Intent;\n'
+        '\n'
+        '    const/4 v1, 0x1\n'
+        '\n'
+        '    invoke-virtual {v0, v1}, Landroid/content/Intent;->addFlags(I)Landroid/content/Intent;\n'
+        '\n'
+        '    iget-object v1, p0, Lcom/oplus/camera/helper/GalleryHelper;->a:Landroid/app/Activity;\n'
+        '\n'
+        '    invoke-virtual {v1, v0}, Landroid/app/Activity;->startActivity(Landroid/content/Intent;)V\n'
+        '\n'
+        '    return-void\n'
+    )
+    fixed = _replace_smali_method(data, 'public final q(Landroid/content/Intent;ZLandroid/net/Uri;)V', q_body)
+    if fixed == data:
+        raise ValueError('OplusCamera GalleryHelper.q method not found')
+
+    smali.write_text(fixed, encoding='utf-8')
+
+
 def blob_fixup_strip_oem_permissions(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
     # Strip undefined OEM permission gates from component declarations while
     # keeping the components registered.
@@ -5926,6 +5998,7 @@ blob_fixups: blob_fixups_user_type = {
         .call(blob_fixup_apktool_unpack_full)
         .call(blob_fixup_opluscamera_font)
         .call(blob_fixup_opluscamera_blur_seginit_guard)
+        .call(blob_fixup_opluscamera_third_party_gallery)
         .call(blob_fixup_strip_oem_permissions)
         .call(blob_fixup_oplus_camera_blur_npe_guard)
         .apktool_pack()
