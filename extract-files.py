@@ -145,6 +145,13 @@ def blob_fixup_apktool_unpack_manifest(ctx, file, file_path, *args, tmp_dir=None
         '-s',
     ])
 
+def blob_fixup_zipalign_apk(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # apktool repack doesn't preserve 4-byte zip alignment; realign in place.
+    path = Path(file_path)
+    aligned = path.with_name(path.name + '.aligned')
+    run_cmd(['zipalign', '-f', '-v', '4', str(path), str(aligned)])
+    aligned.replace(path)
+
 def blob_fixup_aonservice_settings_category(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
     # AONService's "EZ Pay" tile (IntelligentPerceptionActivity) declares a
     # MANUFACTURER_APPLICATION_SETTING tile but NO com.android.settings.category,
@@ -6103,6 +6110,7 @@ blob_fixups: blob_fixups_user_type = {
         .call(blob_fixup_aonservice_settings_category)
         .apktool_pack()
         .stripzip(),
+        .call(blob_fixup_zipalign_apk),
     'product/priv-app/AIUnit/AIUnit.apk': blob_fixup()
         .call(blob_fixup_apk_unpack_nosmali)
         .call(blob_fixup_aiunit_settings_category)
