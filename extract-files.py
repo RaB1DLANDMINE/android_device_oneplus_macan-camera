@@ -28,6 +28,11 @@ import shutil
 def _manifest(tmp_dir: str) -> Path:
     return Path(tmp_dir) / 'AndroidManifest.xml'
 
+_SETTINGS_CATEGORY_META = (
+    '<meta-data android:name="com.android.settings.category" '
+    'android:value="com.android.settings.category.ia.advanced_security"/>'
+)
+
 def lib_fixup_system_ext_suffix(lib: str, partition: str, *args, **kwargs):
     """
     Mirrors lib_to_package_fixup_system_ext_variants from the old setup-makefiles.sh.
