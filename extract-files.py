@@ -95,6 +95,14 @@ def blob_fixup_apktool_unpack_src(ctx, file, file_path, *args, tmp_dir=None, **k
         '--no-res',
     ])
 
+def blob_fixup_apk_unpack_nosmali(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # Resource+manifest decode only (-s keeps the original classes.dex), so large
+    # apks (AIUnit) are byte-preserved apart from a manifest edit — no smali
+    # roundtrip. apktool_pack() reads apktool.yml and rebuilds with the kept dex.
+    if tmp_dir is None:
+        return
+    run_cmd([java_path, '-Xmx8g', '-jar', apktool_path, 'd', '-s', file_path, '-o', tmp_dir, '-f'])
+
 
 def blob_fixup_apktool_unpack_full(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
     if tmp_dir is None:
@@ -129,6 +137,54 @@ def blob_fixup_apktool_unpack_manifest(ctx, file, file_path, *args, tmp_dir=None
         '-f',
         '-s',
     ])
+
+def blob_fixup_aonservice_settings_category(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # AONService's "EZ Pay" tile (IntelligentPerceptionActivity) declares a
+    # MANUFACTURER_APPLICATION_SETTING tile but NO com.android.settings.category,
+    # so AOSP TileUtils files it under a null category that renders on every
+    # unregistered Settings subpage (Reset options, etc.). Inject the AOSP
+    # advanced-security category next to its (unique) title meta-data.
+    if tmp_dir is None:
+        return
+    manifest = _manifest(tmp_dir)
+    if not manifest.exists():
+        return
+    data = manifest.read_text(encoding='utf-8')
+    if _SETTINGS_CATEGORY_META in data:
+        return
+    anchor = (
+        '<meta-data android:name="com.android.settings.title" '
+        'android:resource="@string/intelligent_perception_title_new"/>'
+    )
+    if anchor not in data:
+        raise ValueError('AONService settings-tile title anchor not found')
+    manifest.write_text(
+        data.replace(anchor, anchor + '\n            ' + _SETTINGS_CATEGORY_META, 1),
+        encoding='utf-8',
+    )
+
+
+def blob_fixup_aiunit_settings_category(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # AIUnit's "AI Service Engine" tile (ExpAIStrengthenActivity) uses the
+    # misspelled key com.android.settings.category.export with an Oplus-only
+    # value, which AOSP never reads, so the tile leaks onto every unregistered
+    # Settings subpage. Rewrite it to the proper com.android.settings.category
+    # key with the AOSP advanced-security value.
+    if tmp_dir is None:
+        return
+    manifest = _manifest(tmp_dir)
+    if not manifest.exists():
+        return
+    data = manifest.read_text(encoding='utf-8')
+    if _SETTINGS_CATEGORY_META in data:
+        return
+    old = (
+        '<meta-data android:name="com.android.settings.category.export" '
+        'android:value="com.oplus.settings.category.ia.strengthen_service"/>'
+    )
+    if old not in data:
+        raise ValueError('AIUnit settings-tile category.export anchor not found')
+    manifest.write_text(data.replace(old, _SETTINGS_CATEGORY_META, 1), encoding='utf-8')
 
 
 def blob_fixup_opluscamera_font(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
@@ -5960,6 +6016,16 @@ blob_fixups: blob_fixups_user_type = {
     'system_ext/app/SecurityPermission/SecurityPermission.apk': blob_fixup()
         .call(blob_fixup_apktool_unpack_full)
         .call(blob_fixup_securitypermission_safe_permissions)
+        .apktool_pack()
+        .stripzip(),
+    'product/app/AONService/AONService.apk': blob_fixup()
+        .call(blob_fixup_apk_unpack_nosmali)
+        .call(blob_fixup_aonservice_settings_category)
+        .apktool_pack()
+        .stripzip(),
+    'product/priv-app/AIUnit/AIUnit.apk': blob_fixup()
+        .call(blob_fixup_apk_unpack_nosmali)
+        .call(blob_fixup_aiunit_settings_category)
         .apktool_pack()
         .stripzip(),
 }  # fmt: skip
