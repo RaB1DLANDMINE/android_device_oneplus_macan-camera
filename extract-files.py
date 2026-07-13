@@ -25,6 +25,8 @@ import glob
 import re
 import shutil
 
+def _manifest(tmp_dir: str) -> Path:
+    return Path(tmp_dir) / 'AndroidManifest.xml'
 
 def lib_fixup_system_ext_suffix(lib: str, partition: str, *args, **kwargs):
     """
