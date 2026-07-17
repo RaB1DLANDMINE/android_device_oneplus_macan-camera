@@ -356,6 +356,325 @@ def blob_fixup_oplus_camera_blur_npe_guard(ctx, file, file_path, *args, tmp_dir=
             out.append(data[last:])
             smali.write_text(''.join(out), encoding='utf-8')
 
+def blob_fixup_opluscamera_qr_local_detect(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
+    # QR scanning without AIUnit. Stock detection round-trips every preview
+    # frame to com.oplus.aiunit's scan plugin (ScanClient -> FrameDetector);
+    # this ROM does not ship AIUnit, so the QR toggle never recognises
+    # anything (logcat: AIUnit-SDK(camera)-ScanClient onServiceConnectFailed:
+    # 704). The decode/parse/jump steps are already fully in-app
+    # (com.oplus.scanengine), and the app bundles zxing — only per-frame
+    # detection is remote. Rewrite ScanClient's detect entry point to find the
+    # QR locally with the bundled zxing QRCodeReader and return the same
+    # DetectData(rect, format=1/QR_CODE) payload the AIUnit plugin would have
+    # produced; a null list keeps the "no code" path.
+    #
+    # Rect coordinate space: the consumers (QrCodeScannerPresenter and
+    # com.oplus.scanengine ByteArrayUtil.cropNV21) expect the rect in ROTATED
+    # portrait coordinates (x in [0, frameH], y in [0, frameW]); scanengine
+    # maps it back onto the landscape NV21 buffer as x_land = rect.top,
+    # y_land = frameH - rect.right. zxing reports landscape buffer coords, so
+    # convert: left = frameH - B, top = L, right = frameH - T, bottom = R.
+    # zxing's ResultPoints are finder-pattern CENTERS, so inflate the box by
+    # 1/4 per side to reach the code's outer edges. Keep the inflation small:
+    # scanengine's cropNV21By3_2/4_2 strategies already crop generously for
+    # decode, and this same rect drives the on-screen QR marker UI, which
+    # needs a rect that hugs the code.
+    #
+    # Anchored on kotlin .source names and field TYPES (not R8 names) so it
+    # survives re-obfuscation. Idempotent (:lqr_done marker).
+    if tmp_dir is None:
+        return
+
+    root = Path(tmp_dir)
+
+    scan_smali = scan_data = None
+    for smali in root.glob('smali*/**/*.smali'):
+        data = smali.read_text(encoding='utf-8', errors='ignore')
+        if '.source "ScanClient.kt"' in data and '"ScanTrack"' in data:
+            scan_smali, scan_data = smali, data
+            break
+    if scan_smali is None:
+        raise ValueError('OplusCamera ScanClient smali not found')
+    if ':lqr_done' in scan_data:
+        return
+
+    header = re.search(
+        r'\.method public final (\w+)\(\[BII(L[^;]+;)(L[^;]+;)\)(L[^;]+;)\n',
+        scan_data,
+    )
+    if header is None:
+        raise ValueError('ScanClient detect method not found')
+    name, fmt_t, par_t, res_t = header.groups()
+
+    def class_smali(desc):
+        path = next(root.glob('smali*/' + desc[1:-1] + '.smali'), None)
+        if path is None:
+            raise ValueError(f'smali for {desc} not found')
+        return path.read_text(encoding='utf-8', errors='ignore')
+
+    res_data = class_smali(res_t)
+    f_list = det_t = det_data = None
+    for fm in re.finditer(
+        r'\.field public (\w+):Ljava/util/ArrayList;\s*'
+        r'\.annotation system Ldalvik/annotation/Signature;\s*'
+        r'value = \{\s*"Ljava/util/ArrayList<",\s*"(L[^;]+;)",',
+        res_data,
+    ):
+        cand_data = class_smali(fm.group(2))
+        if '.source "DetectData.kt"' in cand_data:
+            f_list, det_t, det_data = fm.group(1), fm.group(2), cand_data
+            break
+    if f_list is None:
+        raise ValueError('ScanResult DetectData list field not found')
+
+    det_fields = re.findall(
+        r'^\.field public (?:final )?(\w+):(\S+)$', det_data, re.M
+    )
+
+    def det_field(wanted):
+        for fname, ftype in det_fields:
+            if ftype == wanted:
+                return fname
+        raise ValueError(f'DetectData field of type {wanted} not found')
+
+    f_rect = det_field('Landroid/graphics/Rect;')
+    f_fmt = det_field('I')
+    f_score = det_field('F')
+
+    res_init = (
+        f'invoke-direct {{v0}}, {res_t}-><init>()V'
+        if '.method public constructor <init>()V' in res_data
+        else 'invoke-direct {v0}, Ljava/lang/Object;-><init>()V'
+    )
+    det_init = (
+        f'invoke-direct {{v2}}, {det_t}-><init>()V'
+        if '.method public constructor <init>()V' in det_data
+        else 'invoke-direct {v2}, Ljava/lang/Object;-><init>()V'
+    )
+
+    body = f'''    .locals 10
+
+    new-instance v0, {res_t}
+
+    {res_init}
+
+    :try_start_lqr
+    new-instance v1, Lcom/google/zxing/PlanarYUVLuminanceSource;
+
+    move-object v2, p1
+
+    move v3, p2
+
+    move v4, p3
+
+    const/4 v5, 0x0
+
+    const/4 v6, 0x0
+
+    move v7, p2
+
+    move v8, p3
+
+    const/4 v9, 0x0
+
+    invoke-direct/range {{v1 .. v9}}, Lcom/google/zxing/PlanarYUVLuminanceSource;-><init>([BIIIIIIZ)V
+
+    new-instance v2, Lcom/google/zxing/common/HybridBinarizer;
+
+    invoke-direct {{v2, v1}}, Lcom/google/zxing/common/HybridBinarizer;-><init>(Lcom/google/zxing/LuminanceSource;)V
+
+    new-instance v1, Lcom/google/zxing/BinaryBitmap;
+
+    invoke-direct {{v1, v2}}, Lcom/google/zxing/BinaryBitmap;-><init>(Lcom/google/zxing/Binarizer;)V
+
+    new-instance v2, Lcom/google/zxing/qrcode/QRCodeReader;
+
+    invoke-direct {{v2}}, Lcom/google/zxing/qrcode/QRCodeReader;-><init>()V
+
+    new-instance v3, Ljava/util/HashMap;
+
+    invoke-direct {{v3}}, Ljava/util/HashMap;-><init>()V
+
+    sget-object v4, Lcom/google/zxing/DecodeHintType;->TRY_HARDER:Lcom/google/zxing/DecodeHintType;
+
+    sget-object v5, Ljava/lang/Boolean;->TRUE:Ljava/lang/Boolean;
+
+    invoke-virtual {{v3, v4, v5}}, Ljava/util/HashMap;->put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
+
+    invoke-virtual {{v2, v1, v3}}, Lcom/google/zxing/qrcode/QRCodeReader;->decode(Lcom/google/zxing/BinaryBitmap;Ljava/util/Map;)Lcom/google/zxing/Result;
+
+    move-result-object v1
+
+    invoke-virtual {{v1}}, Lcom/google/zxing/Result;->getResultPoints()[Lcom/google/zxing/ResultPoint;
+
+    move-result-object v1
+
+    if-eqz v1, :lqr_done
+
+    array-length v2, v1
+
+    if-eqz v2, :lqr_done
+
+    const/4 v3, 0x0
+
+    aget-object v4, v1, v3
+
+    invoke-virtual {{v4}}, Lcom/google/zxing/ResultPoint;->getX()F
+
+    move-result v5
+
+    invoke-virtual {{v4}}, Lcom/google/zxing/ResultPoint;->getY()F
+
+    move-result v6
+
+    move v7, v5
+
+    move v8, v6
+
+    const/4 v3, 0x1
+
+    :lqr_loop
+    if-ge v3, v2, :lqr_measure
+
+    aget-object v4, v1, v3
+
+    invoke-virtual {{v4}}, Lcom/google/zxing/ResultPoint;->getX()F
+
+    move-result v9
+
+    invoke-static {{v5, v9}}, Ljava/lang/Math;->min(FF)F
+
+    move-result v5
+
+    invoke-static {{v7, v9}}, Ljava/lang/Math;->max(FF)F
+
+    move-result v7
+
+    invoke-virtual {{v4}}, Lcom/google/zxing/ResultPoint;->getY()F
+
+    move-result v9
+
+    invoke-static {{v6, v9}}, Ljava/lang/Math;->min(FF)F
+
+    move-result v6
+
+    invoke-static {{v8, v9}}, Ljava/lang/Math;->max(FF)F
+
+    move-result v8
+
+    add-int/lit8 v3, v3, 0x1
+
+    goto :lqr_loop
+
+    :lqr_measure
+    float-to-int v1, v5
+
+    float-to-int v2, v6
+
+    float-to-int v3, v7
+
+    float-to-int v4, v8
+
+    sub-int v5, v3, v1
+
+    div-int/lit8 v5, v5, 0x4
+
+    sub-int v6, v4, v2
+
+    div-int/lit8 v6, v6, 0x4
+
+    sub-int/2addr v1, v5
+
+    const/4 v7, 0x0
+
+    invoke-static {{v1, v7}}, Ljava/lang/Math;->max(II)I
+
+    move-result v1
+
+    add-int/2addr v3, v5
+
+    invoke-static {{v3, p2}}, Ljava/lang/Math;->min(II)I
+
+    move-result v3
+
+    sub-int/2addr v2, v6
+
+    invoke-static {{v2, v7}}, Ljava/lang/Math;->max(II)I
+
+    move-result v2
+
+    add-int/2addr v4, v6
+
+    invoke-static {{v4, p3}}, Ljava/lang/Math;->min(II)I
+
+    move-result v4
+
+    sub-int v5, p3, v4
+
+    sub-int v6, p3, v2
+
+    new-instance v8, Landroid/graphics/Rect;
+
+    invoke-direct {{v8, v5, v1, v6, v3}}, Landroid/graphics/Rect;-><init>(IIII)V
+
+    move-object v1, v8
+
+    const-string v2, "QrLocalDetect"
+
+    new-instance v3, Ljava/lang/StringBuilder;
+
+    invoke-direct {{v3}}, Ljava/lang/StringBuilder;-><init>()V
+
+    const-string v4, "found rect "
+
+    invoke-virtual {{v3, v4}}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+
+    invoke-virtual {{v3, v1}}, Ljava/lang/StringBuilder;->append(Ljava/lang/Object;)Ljava/lang/StringBuilder;
+
+    invoke-virtual {{v3}}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+
+    move-result-object v3
+
+    invoke-static {{v2, v3}}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+
+    new-instance v2, {det_t}
+
+    {det_init}
+
+    iput-object v1, v2, {det_t}->{f_rect}:Landroid/graphics/Rect;
+
+    const/4 v3, 0x1
+
+    iput v3, v2, {det_t}->{f_fmt}:I
+
+    const/high16 v3, 0x3f800000
+
+    iput v3, v2, {det_t}->{f_score}:F
+
+    new-instance v3, Ljava/util/ArrayList;
+
+    invoke-direct {{v3}}, Ljava/util/ArrayList;-><init>()V
+
+    invoke-virtual {{v3, v2}}, Ljava/util/ArrayList;->add(Ljava/lang/Object;)Z
+
+    iput-object v3, v0, {res_t}->{f_list}:Ljava/util/ArrayList;
+    :try_end_lqr
+    .catch Ljava/lang/Exception; {{:try_start_lqr .. :try_end_lqr}} :lqr_done
+
+    :lqr_done
+    return-object v0
+'''
+
+    fixed = _replace_smali_method(
+        scan_data,
+        f'public final {name}([BII{fmt_t}{par_t}){res_t}',
+        body,
+    )
+    if fixed == scan_data:
+        raise ValueError('ScanClient detect method replacement failed')
+    scan_smali.write_text(fixed, encoding='utf-8')
+
+
 def blob_fixup_opluscamera_third_party_gallery(ctx, file, file_path, *args, tmp_dir=None, **kwargs):
     # Drop the OEM gallery dependency for thumbnail preview. This mirrors the
     # upstream giulia camera-port approach: bypass the package availability
@@ -6015,6 +6334,7 @@ blob_fixups: blob_fixups_user_type = {
         .call(blob_fixup_opluscamera_third_party_gallery)
         .call(blob_fixup_strip_oem_permissions)
         .call(blob_fixup_oplus_camera_blur_npe_guard)
+        .call(blob_fixup_opluscamera_qr_local_detect)
         .apktool_pack()
         .stripzip(),
     'system_ext/app/SystemUIPlugin/SystemUIPlugin.apk': blob_fixup()

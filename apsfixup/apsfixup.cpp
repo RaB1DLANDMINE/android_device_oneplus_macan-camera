@@ -29,14 +29,23 @@
 //
 // ──────────────────────────────────────────────────────────────────────────────────────
 // sm8850 (infiniti) re-derived offsets — DO NOT reuse the dodge/sm8750 values.
-// Derived statically (readelf -r / -s) from:
-//   libAlgoProcess.so  BuildID 82fe443b408f8ed027558b0d4ffb1500
-//   libAlgoInterface.so BuildID ce6e40ca2e987fcc6da26930d84b0b2f
+// ⚠ Offsets are BuildId-specific. Re-derive ALL of them after any camera-blob dump refresh and
+//   update the BuildIds below (a mismatch is a load-time wild write — see got_redirect guard).
+// Derived statically (readelf -r / -s) from the CURRENTLY SHIPPING blobs:
+//   libAlgoProcess.so  BuildID ccb58be9896455d52e21ba607f17cd68
+//   libAlgoInterface.so BuildID 70d19fd9d7f9dc57e6dd668c9ce22a73
 //
-//   constant          sm8850 (ours)   meaning                                 lib
-//   P010_FUNC_VADDR   0x4fc094        APSFormatConverterNeon::p010LSB2MSBNeon  libAlgoProcess
-//   P010_GOT_OFF      0x689ba8        its R_AARCH64_JUMP_SLOT GOT entry        libAlgoProcess
-//   DLSYM_GOT_OFF     0x1bb67c8       dlsym@LIBC JUMP_SLOT GOT entry           libAlgoInterface
+//   constant                 value       meaning                                 lib
+//   P010_GOT_OFF             0x68d4e8    APSFormatConverter::p010LSB2MSB slot     libAlgoProcess
+//                            ^ non-Neon variant (body 0x436544), reached `bl …@plt` from
+//                              hwIPEDoProcess on the IPE hi-res path (in-place src==dst); the
+//                              conversion overruns the source dmabuf. (The Neon p010LSB2MSBNeon
+//                              @0x5008d4 is direct-bound / unhookable, but the IPE path uses the
+//                              non-Neon one, so this is the slot that matters.)
+//   DLSYM_GOT_OFF            0x1b92950   dlsym@LIBC JUMP_SLOT GOT entry           libAlgoInterface
+//   COPYMETA_GOT_OFF/FUNC    0x68b068 / 0x293120  APSMetadata::copyMetadata slot/body  libAlgoProcess
+//   STRLEN_GOT_OFF           0x1b92a10   strlen@LIBC JUMP_SLOT                    libAlgoInterface
+//   ALGOPROC_DLSYM_GOT_OFF   0x68ae08    dlsym@LIBC JUMP_SLOT                     libAlgoProcess
 //   ARC symbol        "ARC_Turbo_RAW_Process"  (string-matched in wrap_dlsym)
 //   struct fields     +0x40 luma / +0x48 chroma / +0x60 pitch[0] / +0x64 pitch[1]
 //                     ^ INHERITED FROM dodge — the chroma-ptr fix is offset-agnostic (scans
@@ -57,14 +66,20 @@
 #include <log/log.h>
 
 // ── sm8850 offsets ──────────────────────────────────────────────────────────────────────
-static constexpr uintptr_t P010_GOT_OFF     = 0x689ba8;   // libAlgoProcess.so p010LSB2MSBNeon GOT
-static constexpr uintptr_t DLSYM_GOT_OFF    = 0x1bb67c8;  // libAlgoInterface.so dlsym GOT
+// The IPE hi-res path (hwIPEDoProcess -> p010LSB2MSB, called `bl …@plt`, in-place src==dst) runs
+// an in-place P010 LSB->MSB conversion whose length overruns the source dmabuf by exactly one page
+// past its end (tombstone: read fault at dmabuf_end). Hook the NON-Neon APSFormatConverter::
+// p010LSB2MSB (body 0x436544) via its PLT/GOT slot and clamp the length in wrap_p010. NB: the Neon
+// variant p010LSB2MSBNeon @0x5008d4 is direct-bound (no slot), but the IPE path uses the non-Neon
+// one — that is the variant that actually faults, and it IS hookable.
+static constexpr uintptr_t P010_GOT_OFF     = 0x68d4e8;   // libAlgoProcess.so p010LSB2MSB JUMP_SLOT
+static constexpr uintptr_t DLSYM_GOT_OFF    = 0x1b92950;  // libAlgoInterface.so dlsym GOT
 // NB: runtime (file) offsets, image base 0 — same convention as P010_* above. Ghidra's default
 // ELF load base is 0x100000, so SUBTRACT 0x100000 from any address read off the Ghidra listing.
 // Verified via `readelf -rsW libAlgoProcess.so`:
-//   R_AARCH64_JUMP_SLOT @ 0x686ee8 -> _ZN7android11APSMetadata12copyMetadataEPK15camera_metadata @ 0x292960
-static constexpr uintptr_t COPYMETA_GOT_OFF  = 0x686ee8;  // libAlgoProcess.so APSMetadata::copyMetadata JUMP_SLOT
-static constexpr uintptr_t COPYMETA_FUNC_OFF = 0x292960;  // libAlgoProcess.so APSMetadata::copyMetadata body
+//   R_AARCH64_JUMP_SLOT @ 0x68b068 -> _ZN7android11APSMetadata12copyMetadataEPK15camera_metadata @ 0x293120
+static constexpr uintptr_t COPYMETA_GOT_OFF  = 0x68b068;  // libAlgoProcess.so APSMetadata::copyMetadata JUMP_SLOT
+static constexpr uintptr_t COPYMETA_FUNC_OFF = 0x293120;  // libAlgoProcess.so APSMetadata::copyMetadata body
 static constexpr const char* LIB_PROCESS   = "libAlgoProcess.so";
 static constexpr const char* LIB_INTERFACE = "libAlgoInterface.so";
 static constexpr const char* ARC_SYMBOL    = "ARC_Turbo_RAW_Process";
@@ -77,12 +92,12 @@ static constexpr const char* ARC_SYMBOL_TFRSN = "ARC_TFRSN_Process";
 // ── doc 28 Family B (WORKAROUND): strlen@LIBC JUMP_SLOT in libAlgoInterface.so ──────────────
 // readelf -rW /tmp/blobs/libAlgoInterface.so | grep strlen :
 //   0000000001bb6888  ... R_AARCH64_JUMP_SLOT  strlen@LIBC + 0
-static constexpr uintptr_t STRLEN_GOT_OFF = 0x1bb6888;  // libAlgoInterface.so strlen JUMP_SLOT
+static constexpr uintptr_t STRLEN_GOT_OFF = 0x1b92a10;  // libAlgoInterface.so strlen JUMP_SLOT
 
 // ── doc 28 Family A (WORKAROUND skeleton, NEEDS-PROBE): dlsym@LIBC JUMP_SLOT in libAlgoProcess ──
 // readelf -rW /tmp/blobs/libAlgoProcess.so | grep dlsym :
 //   0000000000686c88  ... R_AARCH64_JUMP_SLOT  dlsym@LIBC + 0
-static constexpr uintptr_t ALGOPROC_DLSYM_GOT_OFF = 0x686c88;  // libAlgoProcess.so dlsym JUMP_SLOT
+static constexpr uintptr_t ALGOPROC_DLSYM_GOT_OFF = 0x68ae08;  // libAlgoProcess.so dlsym JUMP_SLOT
 // NEEDS-PROBE: "OGLBasicToneProcess" is NOT a dlsym string in libAlgoProcess.so (it lives in
 // libBasicTonePhoto.so @0x53984 and is reached via PLT/DT_NEEDED, not a by-name dlsym from
 // libAlgoProcess). So this exact-name match will NOT fire until a frida probe identifies the real
@@ -165,6 +180,32 @@ static bool mapping_is_writable(uint64_t addr) {
     return writable;
 }
 
+// ── /proc/self/maps executable check (stale-offset guard) ───────────────────────────────────
+// True only when 'addr' falls in an executable ('x') mapping. Used by got_redirect to refuse a
+// redirect whose target slot does NOT currently hold a code pointer. A resolved JUMP_SLOT/GLOB_DAT
+// always points into a library's r-x text; a STALE offset (blob BuildId drift) instead lands on a
+// data word. Refusing in that case turns a wrong offset into an inert no-op instead of a wild write
+// — cf. the load-time crash where buildKey stored through &wrap_p010 after we clobbered a non-slot
+// .got entry at the stale P010_GOT_OFF.
+static bool mapping_is_exec(uint64_t addr) {
+    addr &= 0x00ffffffffffffffULL;   // strip AArch64 TBI top-byte tag
+    FILE* f = fopen("/proc/self/maps", "re");
+    if (!f) return false;
+    char line[512];
+    bool exec = false;
+    while (fgets(line, sizeof(line), f)) {
+        uint64_t lo = 0, hi = 0;
+        char perms[8] = {0};
+        if (sscanf(line, "%" SCNx64 "-%" SCNx64 " %7s", &lo, &hi, perms) != 3) continue;
+        if (addr >= lo && addr < hi) {
+            exec = (perms[2] == 'x');
+            break;
+        }
+    }
+    fclose(f);
+    return exec;
+}
+
 // valid camera buffer VA: high 32 bits in 0x60..0x7f and a sane low offset.
 // doc 28 Family C-1: widened from [0x70,0x7f] to [0x60,0x7f]. tombstone_42 shows the live
 // dmabuf luma at 0x6d43e00000 (hi=0x6d) and the garbage chroma at 0x6e00000000 (hi=0x6e);
@@ -188,6 +229,16 @@ static inline bool is_garbage(uint64_t v) {
 // ── GOT/PLT JUMP_SLOT redirect (relro: mprotect RW, overwrite data ptr, mprotect RO) ──────
 static bool got_redirect(uintptr_t slot, void* newval, void** old) {
     void** got = (void**)slot;
+    // Stale-offset guard (blob BuildId drift): the slot must currently hold a resolved code
+    // pointer. If *got points anywhere non-executable, this offset is wrong for the loaded blob
+    // (the intended JUMP_SLOT has moved) — refuse rather than clobber a data word and cause a
+    // wild write from the blob's own init code. Re-derived (correct) offsets pass this check
+    // because the linker has already bound the slot to the real function's r-x text.
+    if (!mapping_is_exec((uint64_t)*got)) {
+        ALOGE("got_redirect: slot %p holds non-exec ptr %p — stale offset for this blob? skipping",
+              (void*)slot, *got);
+        return false;
+    }
     uintptr_t page = slot & ~(uintptr_t)0xfff;
     if (mprotect((void*)page, 0x1000, PROT_READ | PROT_WRITE) != 0) {
         ALOGE("mprotect RW failed for slot %p", (void*)slot);
@@ -443,7 +494,7 @@ static bool try_install() {
             if (got_redirect(base + P010_GOT_OFF, (void*)wrap_p010, &old)) {
                 g_real_p010 = (p010_fn_t)old;
                 g_done_p010 = true;
-                ALOGI("hooked p010LSB2MSBNeon GOT @%p (real=%p)",
+                ALOGI("hooked p010LSB2MSB GOT @%p (real=%p)",
                       (void*)(base + P010_GOT_OFF), old);
             }
         }
