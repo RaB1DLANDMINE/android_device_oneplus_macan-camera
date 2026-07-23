@@ -53,3 +53,6 @@ dontaudit opluscamera_app debugfs_tracing:file rw_file_perms;
 # OplusShoulderPressureManagerService falls back to default_android_service
 # because it has no label. Cannot allow (neverallow blocks it), so suppress.
 dontaudit opluscamera_app default_android_service:service_manager find;
+
+# Allow Oplus Camera to find linearmotor service (camera shutter/focus haptics)
+allow opluscamera_app linearmotor_vibrator_service:service_manager find;

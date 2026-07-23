@@ -14,5 +14,10 @@ LOCAL_STRIP_MODULE := false
 include $$(BUILD_PREBUILT)
 endef
 
+# Device-gated: these install to a fixed path (OplusCamera/lib/arm64) and would
+# collide with the sibling macanc-camera copy, since Make defines an install rule
+# for every module it reads regardless of PRODUCT_PACKAGES. Only emit for macan.
+ifeq ($(TARGET_DEVICE),macan)
 $(eval $(call oplus-camera-app-lib,libNativeWinBuffExchange))
 $(eval $(call oplus-camera-app-lib,libHeifEncoderWrapper))
+endif
